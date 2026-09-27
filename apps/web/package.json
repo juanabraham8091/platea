@@ -1,0 +1,24 @@
+{
+  "name": "@platea/web",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "next dev -p 3011",
+    "build": "next build",
+    "start": "next start -p 3011",
+    "typecheck": "tsc --noEmit",
+    "lint": "echo \"(web) lint con next se configura al construir la UI\""
+  },
+  "dependencies": {
+    "@platea/shared": "workspace:*",
+    "next": "^14.2.15",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1"
+  },
+  "devDependencies": {
+    "@types/node": "^20.16.11",
+    "@types/react": "^18.3.11",
+    "@types/react-dom": "^18.3.0",
+    "typescript": "^5.6.3"
+  }
+}

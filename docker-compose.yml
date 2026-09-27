@@ -1,0 +1,46 @@
+# PLATEA 2.0 — Servicios de desarrollo local (Doc 11 §5)
+# Levantar con: pnpm docker:up
+# Puertos no estándar para no chocar con otros servicios locales.
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: platea_postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: platea
+      POSTGRES_PASSWORD: platea
+      POSTGRES_DB: platea
+    ports:
+      - "5433:5432"
+    volumes:
+      - platea_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U platea"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    container_name: platea_redis
+    restart: unless-stopped
+    ports:
+      - "6380:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  # Captura de correos en desarrollo (recuperación de contraseña, etc.)
+  mailhog:
+    image: mailhog/mailhog:latest
+    container_name: platea_mailhog
+    restart: unless-stopped
+    ports:
+      - "1025:1025"
+      - "8025:8025"
+
+volumes:
+  platea_pgdata:

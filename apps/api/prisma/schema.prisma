@@ -1,0 +1,611 @@
+// PLATEA 2.0 — Esquema de base de datos (diseño 01-MODELO-DE-DATOS-Y-ESTADOS.md)
+// Migraciones versionadas obligatorias (Master Doc 5 §18). PostgreSQL.
+//
+// Convenciones: PK uuid, created_at/updated_at en todas, FK RESTRICT por defecto,
+// multi-tenant con organization_id denormalizado, dinero en numeric(12,2),
+// enums de estado según packages/shared/states.ts.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ─────────────────────────── Enums ───────────────────────────
+enum OrgStatus {
+  ACTIVE
+  SUSPENDED
+  CANCELLED
+}
+
+enum UserStatus {
+  ACTIVE
+  DISABLED
+}
+
+enum RoleName {
+  SUPER_ADMIN
+  PARK_ADMIN
+  FOOD_TRUCK_OWNER
+  FOOD_TRUCK_STAFF
+  KITCHEN_USER
+}
+
+enum StaffPosition {
+  OWNER
+  STAFF
+  KITCHEN
+}
+
+enum TableStatus {
+  AVAILABLE
+  DISABLED
+}
+
+enum QrStatus {
+  ACTIVE
+  REVOKED
+}
+
+enum TruckStatus {
+  ACTIVE
+  INACTIVE
+  SUSPENDED
+}
+
+enum ProductStatus {
+  ACTIVE
+  ARCHIVED
+}
+
+enum SessionStatus {
+  OPEN
+  AWAITING_PAYMENT
+  PAID
+  CLOSED
+  VOIDED
+}
+
+enum SubOrderStatus {
+  PENDING
+  ACCEPTED
+  PREPARING
+  READY
+  DELIVERED
+  CANCELLED
+}
+
+enum InvoiceStatus {
+  PENDING
+  PAID
+  VOIDED
+}
+
+enum PaymentStatus {
+  PENDING
+  CONFIRMED
+  VOIDED
+}
+
+enum PaymentMethod {
+  CASH
+  CARD_OWN
+  TRANSFER
+  OTHER
+}
+
+enum CommissionStatus {
+  ACCRUED
+  BILLED
+  PAID
+}
+
+enum BillingCycleStatus {
+  OPEN
+  ISSUED
+  PAID
+  OVERDUE
+}
+
+enum ReviewStatus {
+  PUBLISHED
+  HIDDEN
+  FLAGGED
+}
+
+// ─────────────────────── Identidad y tenancy ───────────────────────
+model Organization {
+  id                 String    @id @default(uuid()) @db.Uuid
+  name               String
+  status             OrgStatus @default(ACTIVE)
+  plan               String    @default("STARTER")
+  billingEmail       String?   @map("billing_email")
+  paymentMethodNote  String?   @map("payment_method_note")
+  settings           Json      @default("{}")
+  createdAt          DateTime  @default(now()) @map("created_at")
+  updatedAt          DateTime  @updatedAt @map("updated_at")
+
+  users        User[]
+  parks        FoodTruckPark[]
+  userRoles    UserRole[]
+  billingCycles BillingCycle[]
+
+  @@map("organizations")
+}
+
+model User {
+  id             String     @id @default(uuid()) @db.Uuid
+  organizationId String?    @map("organization_id") @db.Uuid
+  name           String
+  email          String     @unique
+  phone          String?
+  passwordHash   String     @map("password_hash")
+  status         UserStatus @default(ACTIVE)
+  mfaSecret      String?    @map("mfa_secret")
+  mfaEnabled     Boolean    @default(false) @map("mfa_enabled")
+  lastLoginAt    DateTime?  @map("last_login_at")
+  createdAt      DateTime   @default(now()) @map("created_at")
+  updatedAt      DateTime   @updatedAt @map("updated_at")
+
+  organization Organization?    @relation(fields: [organizationId], references: [id])
+  userRoles    UserRole[]
+  staffOf      FoodTruckStaff[]
+  refreshTokens RefreshToken[]
+  passwordResets PasswordReset[]
+
+  @@index([organizationId])
+  @@map("users")
+}
+
+model UserRole {
+  id             String   @id @default(uuid()) @db.Uuid
+  userId         String   @map("user_id") @db.Uuid
+  role           RoleName
+  organizationId String?  @map("organization_id") @db.Uuid
+  foodTruckId    String?  @map("food_truck_id") @db.Uuid
+  createdAt      DateTime @default(now()) @map("created_at")
+
+  user         User          @relation(fields: [userId], references: [id])
+  organization Organization? @relation(fields: [organizationId], references: [id])
+  foodTruck    FoodTruck?    @relation(fields: [foodTruckId], references: [id])
+
+  @@unique([userId, role, organizationId, foodTruckId])
+  @@index([userId])
+  @@map("user_roles")
+}
+
+model RefreshToken {
+  id        String   @id @default(uuid()) @db.Uuid
+  userId    String   @map("user_id") @db.Uuid
+  tokenHash String   @map("token_hash")
+  expiresAt DateTime @map("expires_at")
+  revokedAt DateTime? @map("revoked_at")
+  createdAt DateTime @default(now()) @map("created_at")
+
+  user User @relation(fields: [userId], references: [id])
+
+  @@index([userId])
+  @@index([tokenHash])
+  @@map("refresh_tokens")
+}
+
+model PasswordReset {
+  id        String   @id @default(uuid()) @db.Uuid
+  userId    String   @map("user_id") @db.Uuid
+  tokenHash String   @map("token_hash")
+  expiresAt DateTime @map("expires_at")
+  usedAt    DateTime? @map("used_at")
+  createdAt DateTime @default(now()) @map("created_at")
+
+  user User @relation(fields: [userId], references: [id])
+
+  @@index([tokenHash])
+  @@map("password_resets")
+}
+
+// ─────────────────────── Estructura física ───────────────────────
+model FoodTruckPark {
+  id             String   @id @default(uuid()) @db.Uuid
+  organizationId String   @map("organization_id") @db.Uuid
+  name           String
+  address        String?
+  city           String?
+  timezone       String   @default("America/Santo_Domingo")
+  currency       String   @default("DOP")
+  taxRate        Decimal  @default("0.18") @map("tax_rate") @db.Decimal(5, 4)
+  tipRate        Decimal  @default("0.10") @map("tip_rate") @db.Decimal(5, 4)
+  tipEnabled     Boolean  @default(true) @map("tip_enabled")
+  settings       Json     @default("{}")
+  status         String   @default("ACTIVE")
+  createdAt      DateTime @default(now()) @map("created_at")
+  updatedAt      DateTime @updatedAt @map("updated_at")
+
+  organization Organization    @relation(fields: [organizationId], references: [id])
+  tables       ParkTable[]
+  foodTrucks   FoodTruck[]
+  sessions     TableSession[]
+
+  @@index([organizationId])
+  @@map("food_truck_parks")
+}
+
+model ParkTable {
+  id             String      @id @default(uuid()) @db.Uuid
+  organizationId String      @map("organization_id") @db.Uuid
+  parkId         String      @map("park_id") @db.Uuid
+  number         Int
+  zoneName       String?     @map("zone_name")
+  capacity       Int?
+  status         TableStatus @default(AVAILABLE)
+  createdAt      DateTime    @default(now()) @map("created_at")
+  updatedAt      DateTime    @updatedAt @map("updated_at")
+
+  park     FoodTruckPark  @relation(fields: [parkId], references: [id])
+  qrCodes  QrCode[]
+  sessions TableSession[]
+
+  @@unique([parkId, number])
+  @@index([organizationId])
+  @@map("park_tables")
+}
+
+model QrCode {
+  id        String   @id @default(uuid()) @db.Uuid
+  tableId   String   @map("table_id") @db.Uuid
+  code      String   @unique
+  status    QrStatus @default(ACTIVE)
+  createdAt DateTime @default(now()) @map("created_at")
+
+  table ParkTable @relation(fields: [tableId], references: [id])
+
+  @@index([tableId])
+  @@map("qr_codes")
+}
+
+model FoodTruck {
+  id             String      @id @default(uuid()) @db.Uuid
+  organizationId String      @map("organization_id") @db.Uuid
+  parkId         String      @map("park_id") @db.Uuid
+  name           String
+  description    String?
+  logoUrl        String?     @map("logo_url")
+  status         TruckStatus @default(ACTIVE)
+  schedule       Json?
+  displayOrder   Int         @default(0) @map("display_order")
+  createdAt      DateTime    @default(now()) @map("created_at")
+  updatedAt      DateTime    @updatedAt @map("updated_at")
+
+  park       FoodTruckPark    @relation(fields: [parkId], references: [id])
+  categories Category[]
+  products   Product[]
+  staff      FoodTruckStaff[]
+  userRoles  UserRole[]
+  subOrders  SubOrder[]
+
+  @@index([organizationId])
+  @@index([parkId])
+  @@map("food_trucks")
+}
+
+model FoodTruckStaff {
+  id          String        @id @default(uuid()) @db.Uuid
+  foodTruckId String        @map("food_truck_id") @db.Uuid
+  userId      String        @map("user_id") @db.Uuid
+  position    StaffPosition
+  createdAt   DateTime      @default(now()) @map("created_at")
+
+  foodTruck FoodTruck @relation(fields: [foodTruckId], references: [id])
+  user      User      @relation(fields: [userId], references: [id])
+
+  @@unique([foodTruckId, userId])
+  @@map("food_truck_staff")
+}
+
+model Category {
+  id             String   @id @default(uuid()) @db.Uuid
+  organizationId String   @map("organization_id") @db.Uuid
+  foodTruckId    String   @map("food_truck_id") @db.Uuid
+  name           String
+  displayOrder   Int      @default(0) @map("display_order")
+  status         String   @default("ACTIVE")
+  createdAt      DateTime @default(now()) @map("created_at")
+  updatedAt      DateTime @updatedAt @map("updated_at")
+
+  foodTruck FoodTruck @relation(fields: [foodTruckId], references: [id])
+  products  Product[]
+
+  @@index([foodTruckId])
+  @@map("categories")
+}
+
+model Product {
+  id              String        @id @default(uuid()) @db.Uuid
+  organizationId  String        @map("organization_id") @db.Uuid
+  foodTruckId     String        @map("food_truck_id") @db.Uuid
+  categoryId      String        @map("category_id") @db.Uuid
+  name            String
+  description     String?
+  imageUrl        String?       @map("image_url")
+  price           Decimal       @db.Decimal(12, 2)
+  available       Boolean       @default(true)
+  prepTimeMinutes Int?          @map("prep_time_minutes")
+  displayOrder    Int           @default(0) @map("display_order")
+  status          ProductStatus @default(ACTIVE)
+  deletedAt       DateTime?     @map("deleted_at")
+  createdAt       DateTime      @default(now()) @map("created_at")
+  updatedAt       DateTime      @updatedAt @map("updated_at")
+
+  foodTruck  FoodTruck   @relation(fields: [foodTruckId], references: [id])
+  category   Category    @relation(fields: [categoryId], references: [id])
+  orderItems OrderItem[]
+
+  @@index([foodTruckId])
+  @@index([categoryId])
+  @@map("products")
+}
+
+// ─────────────────────── Sesiones y pedidos ───────────────────────
+model TableSession {
+  id                String        @id @default(uuid()) @db.Uuid
+  organizationId    String        @map("organization_id") @db.Uuid
+  parkId            String        @map("park_id") @db.Uuid
+  tableId           String        @map("table_id") @db.Uuid
+  status            SessionStatus @default(OPEN)
+  guestCount        Int?          @map("guest_count")
+  openedAt          DateTime      @default(now()) @map("opened_at")
+  awaitingPaymentAt DateTime?     @map("awaiting_payment_at")
+  paidAt            DateTime?     @map("paid_at")
+  closedAt          DateTime?     @map("closed_at")
+  voidedBy          String?       @map("voided_by") @db.Uuid
+  voidReason        String?       @map("void_reason")
+  createdAt         DateTime      @default(now()) @map("created_at")
+  updatedAt         DateTime      @updatedAt @map("updated_at")
+
+  park    FoodTruckPark   @relation(fields: [parkId], references: [id])
+  table   ParkTable       @relation(fields: [tableId], references: [id])
+  devices SessionDevice[]
+  orders  Order[]
+  invoice Invoice?
+  reviews Review[]
+  statusHistory SessionStatusHistory[]
+
+  @@index([parkId, status])
+  @@index([organizationId])
+  @@map("table_sessions")
+}
+
+model SessionDevice {
+  id          String   @id @default(uuid()) @db.Uuid
+  sessionId   String   @map("session_id") @db.Uuid
+  deviceToken String   @map("device_token")
+  joinedAt    DateTime @default(now()) @map("joined_at")
+
+  session TableSession @relation(fields: [sessionId], references: [id])
+
+  @@index([sessionId])
+  @@map("session_devices")
+}
+
+model Order {
+  id             String   @id @default(uuid()) @db.Uuid
+  organizationId String   @map("organization_id") @db.Uuid
+  sessionId      String   @map("session_id") @db.Uuid
+  deviceToken    String?  @map("device_token")
+  notes          String?
+  subtotal       Decimal  @db.Decimal(12, 2)
+  createdAt      DateTime @default(now()) @map("created_at")
+
+  session   TableSession @relation(fields: [sessionId], references: [id])
+  subOrders SubOrder[]
+
+  @@index([sessionId])
+  @@map("orders")
+}
+
+model SubOrder {
+  id              String         @id @default(uuid()) @db.Uuid
+  organizationId  String         @map("organization_id") @db.Uuid
+  orderId         String         @map("order_id") @db.Uuid
+  sessionId       String         @map("session_id") @db.Uuid
+  foodTruckId     String         @map("food_truck_id") @db.Uuid
+  status          SubOrderStatus @default(PENDING)
+  subtotal        Decimal        @db.Decimal(12, 2)
+  cancelledReason String?        @map("cancelled_reason")
+  cancelledBy     String?        @map("cancelled_by") @db.Uuid
+  acceptedAt      DateTime?      @map("accepted_at")
+  readyAt         DateTime?      @map("ready_at")
+  deliveredAt     DateTime?      @map("delivered_at")
+  createdAt       DateTime       @default(now()) @map("created_at")
+  updatedAt       DateTime       @updatedAt @map("updated_at")
+
+  order         Order       @relation(fields: [orderId], references: [id])
+  foodTruck     FoodTruck   @relation(fields: [foodTruckId], references: [id])
+  items         OrderItem[]
+  statusHistory SubOrderStatusHistory[]
+
+  @@index([foodTruckId, status])
+  @@index([sessionId])
+  @@map("sub_orders")
+}
+
+model OrderItem {
+  id          String   @id @default(uuid()) @db.Uuid
+  subOrderId  String   @map("sub_order_id") @db.Uuid
+  productId   String   @map("product_id") @db.Uuid
+  productName String   @map("product_name")
+  unitPrice   Decimal  @map("unit_price") @db.Decimal(12, 2)
+  quantity    Int
+  lineTotal   Decimal  @map("line_total") @db.Decimal(12, 2)
+  notes       String?
+
+  subOrder SubOrder @relation(fields: [subOrderId], references: [id])
+  product  Product  @relation(fields: [productId], references: [id])
+
+  @@index([subOrderId])
+  @@map("order_items")
+}
+
+model SubOrderStatusHistory {
+  id         String   @id @default(uuid()) @db.Uuid
+  subOrderId String   @map("sub_order_id") @db.Uuid
+  fromStatus String?  @map("from_status")
+  toStatus   String   @map("to_status")
+  changedBy  String?  @map("changed_by") @db.Uuid
+  changedAt  DateTime @default(now()) @map("changed_at")
+
+  subOrder SubOrder @relation(fields: [subOrderId], references: [id])
+
+  @@index([subOrderId])
+  @@map("sub_order_status_history")
+}
+
+model SessionStatusHistory {
+  id        String   @id @default(uuid()) @db.Uuid
+  sessionId String   @map("session_id") @db.Uuid
+  fromStatus String? @map("from_status")
+  toStatus  String   @map("to_status")
+  changedBy String?  @map("changed_by") @db.Uuid
+  changedAt DateTime @default(now()) @map("changed_at")
+
+  session TableSession @relation(fields: [sessionId], references: [id])
+
+  @@index([sessionId])
+  @@map("session_status_history")
+}
+
+// ─────────────────────── Facturación y cobros ───────────────────────
+model Invoice {
+  id             String        @id @default(uuid()) @db.Uuid
+  organizationId String        @map("organization_id") @db.Uuid
+  parkId         String        @map("park_id") @db.Uuid
+  sessionId      String        @unique @map("session_id") @db.Uuid
+  invoiceNumber  String        @unique @map("invoice_number")
+  subtotal       Decimal       @db.Decimal(12, 2)
+  taxAmount      Decimal       @map("tax_amount") @db.Decimal(12, 2)
+  tipAmount      Decimal       @map("tip_amount") @db.Decimal(12, 2)
+  total          Decimal       @db.Decimal(12, 2)
+  status         InvoiceStatus @default(PENDING)
+  issuedAt       DateTime      @default(now()) @map("issued_at")
+  paidAt         DateTime?     @map("paid_at")
+  integrityHash  String        @map("integrity_hash")
+  createdAt      DateTime      @default(now()) @map("created_at")
+  updatedAt      DateTime      @updatedAt @map("updated_at")
+
+  session    TableSession             @relation(fields: [sessionId], references: [id])
+  breakdowns InvoiceTruckBreakdown[]
+  commission PlatformCommission?
+
+  @@index([organizationId, issuedAt])
+  @@map("invoices")
+}
+
+model InvoiceTruckBreakdown {
+  id            String         @id @default(uuid()) @db.Uuid
+  invoiceId     String         @map("invoice_id") @db.Uuid
+  foodTruckId   String         @map("food_truck_id") @db.Uuid
+  subtotal      Decimal        @db.Decimal(12, 2)
+  taxAmount     Decimal        @map("tax_amount") @db.Decimal(12, 2)
+  tipAmount     Decimal        @map("tip_amount") @db.Decimal(12, 2)
+  total         Decimal        @db.Decimal(12, 2)
+  paymentStatus PaymentStatus  @default(PENDING) @map("payment_status")
+  paymentMethod PaymentMethod? @map("payment_method")
+  confirmedBy   String?        @map("confirmed_by") @db.Uuid
+  confirmedAt   DateTime?      @map("confirmed_at")
+
+  invoice Invoice @relation(fields: [invoiceId], references: [id])
+
+  @@index([invoiceId])
+  @@index([foodTruckId, paymentStatus])
+  @@map("invoice_truck_breakdowns")
+}
+
+model PlatformCommission {
+  id             String           @id @default(uuid()) @db.Uuid
+  organizationId String           @map("organization_id") @db.Uuid
+  invoiceId      String           @unique @map("invoice_id") @db.Uuid
+  amount         Decimal          @db.Decimal(6, 2)
+  currency       String           @default("USD")
+  status         CommissionStatus @default(ACCRUED)
+  accruedAt      DateTime         @default(now()) @map("accrued_at")
+  billingCycleId String?          @map("billing_cycle_id") @db.Uuid
+  createdAt      DateTime         @default(now()) @map("created_at")
+  updatedAt      DateTime         @updatedAt @map("updated_at")
+
+  invoice      Invoice       @relation(fields: [invoiceId], references: [id])
+  billingCycle BillingCycle? @relation(fields: [billingCycleId], references: [id])
+
+  @@index([organizationId, status])
+  @@map("platform_commissions")
+}
+
+model BillingCycle {
+  id               String             @id @default(uuid()) @db.Uuid
+  organizationId   String             @map("organization_id") @db.Uuid
+  periodStart      DateTime           @map("period_start") @db.Date
+  periodEnd        DateTime           @map("period_end") @db.Date
+  tablesCount      Int                @map("tables_count")
+  tableFeeTotal    Decimal            @map("table_fee_total") @db.Decimal(10, 2)
+  commissionsCount Int                @map("commissions_count")
+  commissionsTotal Decimal            @map("commissions_total") @db.Decimal(10, 2)
+  totalDue         Decimal            @map("total_due") @db.Decimal(10, 2)
+  status           BillingCycleStatus @default(OPEN)
+  issuedAt         DateTime?          @map("issued_at")
+  paidAt           DateTime?          @map("paid_at")
+  paymentReference String?            @map("payment_reference")
+  createdAt        DateTime           @default(now()) @map("created_at")
+  updatedAt        DateTime           @updatedAt @map("updated_at")
+
+  organization Organization         @relation(fields: [organizationId], references: [id])
+  commissions  PlatformCommission[]
+
+  @@index([organizationId, status])
+  @@map("billing_cycles")
+}
+
+// ─────────────────────── Reseñas, auditoría, config ───────────────────────
+model Review {
+  id             String       @id @default(uuid()) @db.Uuid
+  organizationId String       @map("organization_id") @db.Uuid
+  parkId         String       @map("park_id") @db.Uuid
+  foodTruckId    String       @map("food_truck_id") @db.Uuid
+  sessionId      String       @map("session_id") @db.Uuid
+  rating         Int
+  comment        String?
+  status         ReviewStatus @default(PUBLISHED)
+  createdAt      DateTime     @default(now()) @map("created_at")
+
+  session TableSession @relation(fields: [sessionId], references: [id])
+
+  @@unique([sessionId, foodTruckId])
+  @@index([foodTruckId])
+  @@map("reviews")
+}
+
+model AuditLog {
+  id             String   @id @default(uuid()) @db.Uuid
+  organizationId String?  @map("organization_id") @db.Uuid
+  userId         String?  @map("user_id") @db.Uuid
+  action         String
+  entity         String
+  entityId       String?  @map("entity_id") @db.Uuid
+  oldValue       Json?    @map("old_value")
+  newValue       Json?    @map("new_value")
+  ip             String?
+  userAgent      String?  @map("user_agent")
+  createdAt      DateTime @default(now()) @map("created_at")
+
+  @@index([entity, entityId, createdAt])
+  @@index([organizationId, createdAt])
+  @@map("audit_logs")
+}
+
+model SystemSetting {
+  key       String   @id
+  value     Json
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@map("system_settings")
+}
